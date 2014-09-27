@@ -1,0 +1,8 @@
+Debug/
+Release/
+ipch/
+*.exe
+*.dll
+*.pdb
+*.sdf
+*.user
