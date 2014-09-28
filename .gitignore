@@ -6,3 +6,6 @@ ipch/
 *.pdb
 *.sdf
 *.user
+*.ilk
+*.suo
+*.opensdf

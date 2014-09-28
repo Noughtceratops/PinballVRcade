@@ -651,8 +651,8 @@ HRESULT Direct3DDevice9Hooks::DrawIndexedPrimitive (D3DPRIMITIVETYPE PrimitiveTy
         OVR::Vector3f hmd_position = head_pose.Position;
         OVR::Quatf hmd_orientation = head_pose.Orientation;
 
-        float unit_scale = 4000.0f;
-        OVR::Vector3f ovr_world_offset(0, 3500.0f, 3500.0f);
+        float unit_scale = 5000.0f;
+        OVR::Vector3f ovr_world_offset(0, 3000.0f, 5000.0f);
         OVR::Matrix4f ovr_translation = OVR::Matrix4f::Translation(-ovr_world_offset - hmd_position * unit_scale);
         OVR::Matrix4f ovr_view = OVR::Matrix4f(hmd_orientation.Inverted()) * ovr_translation;
         OVR::Matrix4f ovr_eye_view = OVR::Matrix4f::Translation(this->eye_render_desc[eye].ViewAdjust) * ovr_view * axis_conversion;
