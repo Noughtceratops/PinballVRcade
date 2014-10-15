@@ -154,6 +154,7 @@ private:
     // Render target helpers
     bool stereo;
     bool render_distorted;
+    bool reset_pressed;
     unsigned int frame_index;
     OVR::Sizei target_size;
     IDirect3DTexture9* hmd_texture;

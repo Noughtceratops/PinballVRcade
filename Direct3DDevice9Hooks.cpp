@@ -12,9 +12,50 @@
 
 #include <d3dx9.h>
 #include "Direct3DDevice9Hooks.h"
+#include "hacks.h"
 
 #define OVR_D3D_VERSION 9
 #include <OVR_CAPI_D3D.h>
+
+static const float s_identity_matrix[16] = {
+    1, 0, 0, 0,
+    0, 1, 0, 0,
+    0, 0, 1, 0,
+    0, 0, 0, 1,
+};
+
+static void patch_timestep (int frame_hz)
+{
+    rolling_crc crc;
+    crc.block_size = 9;
+    crc.a = 0x05cc;
+    crc.b = 0x1acf;
+
+    uintptr_t address = find_fingerprint(crc);
+    uintptr_t ms_per_tick_compare = address + 0x00C5D0B5 - 0x00C5D046;
+
+    // Get the address of the intervals_per_tick global by reading its address from
+    // an instruction that uses it as an operand.
+    uintptr_t ms_per_tick_address;
+    read_code(ms_per_tick_compare + 2, sizeof(ms_per_tick_address), &ms_per_tick_address);
+
+    // Reassign it to the frame hz.
+    double intervals_per_tick = 1000 / (double)frame_hz;
+    install_patch(ms_per_tick_address, sizeof(intervals_per_tick), &intervals_per_tick);
+
+    // Get the global step scale and divide it by two
+    uintptr_t global_step_address;
+    uintptr_t global_step_load = address + 0x00C5D0F7 - 0x00C5D046;
+    read_code(global_step_load + 2, sizeof(global_step_address), &global_step_address);
+    float* global_step = (float*)global_step_address;
+    float new_global_step = *global_step * (60 / (float)frame_hz);
+    install_patch(global_step_address, sizeof(new_global_step), &new_global_step);
+
+    // Get the address of the instruction that assigns the simulation steps
+    unsigned milliseconds_per_frame = 1000 / frame_hz;
+    uintptr_t frame_interval_load = address + 0x00C5D100 - 0x00C5D046;
+    install_patch(frame_interval_load + 1, sizeof(milliseconds_per_frame), &milliseconds_per_frame);
+}
 
 Direct3DDevice9Hooks::Direct3DDevice9Hooks (IDirect3D9* parent, IDirect3DDevice9* inner, const D3DPRESENT_PARAMETERS& present_parameters, ovrHmd hmd)
 {
@@ -25,9 +66,17 @@ Direct3DDevice9Hooks::Direct3DDevice9Hooks (IDirect3D9* parent, IDirect3DDevice9
     this->hmd = hmd;
     this->stereo = false;
     this->render_distorted = true;
+    this->reset_pressed = false;
     this->frame_index = 0;
     memset(&this->current_stream, 0, sizeof(this->current_stream));
     this->inner->GetRenderTarget(0, &this->back_buffer_surface);
+
+    if (present_parameters.Windowed == 0)
+    {
+        D3DDISPLAYMODE display_mode;
+        this->inner->GetDisplayMode(0, &display_mode);
+        patch_timestep(display_mode.RefreshRate);
+    }
 
     if (this->hmd)
     {
@@ -46,8 +95,7 @@ Direct3DDevice9Hooks::Direct3DDevice9Hooks (IDirect3D9* parent, IDirect3DDevice9
             ovrDistortionCap_Chromatic
             | ovrDistortionCap_NoRestore
             | ovrDistortionCap_SRGB
-            | ovrDistortionCap_Overdrive
-            | ovrDistortionCap_TimeWarp;
+            | ovrDistortionCap_Overdrive;
         if (!ovrHmd_ConfigureRendering(this->hmd, &cfg.Config, caps, hmd->DefaultEyeFov, this->eye_render_desc))
         {
             this->hmd = 0;
@@ -65,6 +113,30 @@ Direct3DDevice9Hooks::Direct3DDevice9Hooks (IDirect3D9* parent, IDirect3DDevice9
                 &this->hmd_texture,
                 NULL // pSharedHandle
             );
+
+            // As Pinball Arcade gets patched, its code is likely to move around, so
+            // we keep a fingerprint hash of some stable code close to the matrix
+            // call site we need to patch. We can search the code segment for things
+            // matching this fingerprint and rediscover the location of the code we
+            // want to patch.
+            rolling_crc VIEW_PROJECTION_MULTIPLY_FINGERPRINT;
+            VIEW_PROJECTION_MULTIPLY_FINGERPRINT.block_size = 0x18;
+            VIEW_PROJECTION_MULTIPLY_FINGERPRINT.a = 0x0f20;
+            VIEW_PROJECTION_MULTIPLY_FINGERPRINT.b = 0xb638;
+            size_t VIEW_PROJECTION_MULTIPLY_FINGERPRINT_OFFSET = 0x25;
+
+            // Create a patch that loads two identity matrices instead of the view and
+            // projection matrices so that when C_WORLDVIEWPROJ shader constants get set,
+            // get only the WORLD part of the transformation and can apply our own
+            // view and projection matrices
+            unsigned char patch[10];
+            patch[0] = 0xB8; // MOV eax
+            *(uintptr_t*)&patch[1] = (uintptr_t)s_identity_matrix;
+            patch[5] = 0xB9; // MOV ecx
+            *(uintptr_t*)&patch[6] = (uintptr_t)s_identity_matrix;
+
+            uintptr_t address = find_fingerprint(VIEW_PROJECTION_MULTIPLY_FINGERPRINT);
+            install_patch(address + VIEW_PROJECTION_MULTIPLY_FINGERPRINT_OFFSET, sizeof(patch), patch);
         }
     }
 }
@@ -185,6 +257,19 @@ HRESULT Direct3DDevice9Hooks::Present (CONST RECT* pSourceRect,CONST RECT* pDest
             eye_textures[1].D3D9.Header.RenderViewport.Pos.x = this->target_size.w / 2;
             ovrHmd_EndFrame(this->hmd, this->head_pose, &eye_textures[0].Texture);
         }
+        if (GetAsyncKeyState(VK_F12) != 0)
+        {
+            if (!this->reset_pressed)
+            {
+                ovrHmd_RecenterPose(this->hmd);
+                this->reset_pressed = true;
+            }
+        }
+        else
+        {
+            this->reset_pressed = false;
+        }
+
         ovrHmd_BeginFrame(this->hmd, this->frame_index++);
         this->head_pose[ovrEye_Left] = ovrHmd_GetEyePose(this->hmd, ovrEye_Left);
         this->head_pose[ovrEye_Right] = ovrHmd_GetEyePose(this->hmd, ovrEye_Right);

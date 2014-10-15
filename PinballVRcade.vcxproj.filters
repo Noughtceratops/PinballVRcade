@@ -8,5 +8,6 @@
   <ItemGroup>
     <ClInclude Include="Direct3D9Hooks.h" />
     <ClInclude Include="Direct3DDevice9Hooks.h" />
+    <ClInclude Include="hacks.h" />
   </ItemGroup>
 </Project>
